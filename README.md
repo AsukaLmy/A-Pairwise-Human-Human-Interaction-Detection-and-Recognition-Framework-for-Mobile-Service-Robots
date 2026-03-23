@@ -1,4 +1,7 @@
 # Training Scripts
+
+Details can be found in https://arxiv.org/abs/2602.22346
+
 ## Start
 ```bash
 pip install -r requirements.txt
