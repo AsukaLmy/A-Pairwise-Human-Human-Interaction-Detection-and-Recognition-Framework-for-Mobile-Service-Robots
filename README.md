@@ -165,20 +165,28 @@ Each directed edge $(i \rightarrow j)$ carries the same 7D geometric features as
 
 #### Graph Transformer Message Passing
 
-$L = 2$ Graph Transformer layers are applied (hidden dim $= 256$, $H = 4$ attention heads). Each layer performs two coupled updates:
+2 Graph Transformer layers are applied (hidden dim = 256, 4 attention heads). Each layer performs two coupled updates in sequence:
 
-- **Edge update:** $e'_{ij} = \text{LN}\bigl(e_{ij} + \text{SiLU}(W_s h_i + W_d h_j + W_e e_{ij})\bigr)$ — edges absorb source and destination node context at each layer.
-- **Node update:** Multi-head attention using the updated edge features $e'_{ij}$: $h'_i = \text{ELU}\bigl(\text{LN}(\sum_j \alpha_{ij} W h_j + h_i)\bigr)$, where $\alpha_{ij} = \text{softmax}_j\bigl(a^\top [Wh_i \| Wh_j \| W_e e'_{ij}]\bigr)$.
+- **Edge update:** Each edge absorbs context from its source node, destination node, and its own previous state via a residual gating unit (linear projections + SiLU activation + LayerNorm). Edge features therefore evolve across layers alongside node features.
+- **Node update:** Each node aggregates weighted messages from its neighbors using multi-head attention, where attention scores are computed jointly from the source node, destination node, and the already-updated edge feature. A residual connection and LayerNorm are applied after aggregation.
 
 Both node and edge representations evolve jointly across all layers.
 
 #### Behavior Classifier
 
-For each labeled positive pair $(A, B)$, the behavior classifier receives the concatenation $[\mathbf{h}_A,\ \mathbf{h}_B,\ |\mathbf{h}_A - \mathbf{h}_B|,\ \mathbf{h}_A \odot \mathbf{h}_B,\ \mathbf{f}_\text{flow},\ \mathbf{e}_{AB}]$, where $\mathbf{h}$ are GNN-evolved node embeddings (256D), $\mathbf{f}_\text{flow}$ is the 10D geometric–motion feature vector, and $\mathbf{e}_{AB}$ is the symmetrized evolved edge feature (64D). This is passed through an MLP with hidden layers $[256, 128, 64]$ to produce 3-class logits.
+For each labeled positive pair (A, B), the classifier input is the concatenation of:
+
+- Node embeddings of A and B (256D each)
+- Element-wise absolute difference of the two embeddings (256D)
+- Element-wise product of the two embeddings (256D)
+- 10D geometric–motion feature vector
+- Symmetrized evolved edge feature between A and B (64D)
+
+This vector is passed through an MLP with hidden layers `[256, 128, 64]` to produce 3-class logits (Walking / Standing / Sitting Together).
 
 #### Group Detection Head
 
-A secondary binary head classifies all pairs — both positive (labeled) and negative (unlabeled, sampled from non-interacting persons in the same scene) — using $[\mathbf{h}_A, \mathbf{h}_B, |\mathbf{h}_A - \mathbf{h}_B|, \mathbf{h}_A \odot \mathbf{h}_B, \mathbf{e}_{AB}]$ through a compact MLP ($[256, 64] \rightarrow 1$ logit). Negative pair labels are derived automatically from pair membership with no extra annotation. The multi-task training loss combines behavior classification ($\lambda_\text{beh} = 0.8$) and group detection ($\lambda_\text{grp} = 0.2$).
+A secondary binary head classifies all pairs — both positive (labeled) and negative (unlabeled, sampled from non-interacting persons in the same scene). Its input is the same node-embedding concatenation as the behavior classifier but without the flow features (which are unavailable for negative pairs). The head uses a compact MLP (`[256, 64] → 1` logit). Negative pair labels are derived automatically from pair membership with no extra annotation. The multi-task training loss combines behavior classification (weight 0.8) and group detection (weight 0.2).
 
 #### Optional Structural Improvements
 
