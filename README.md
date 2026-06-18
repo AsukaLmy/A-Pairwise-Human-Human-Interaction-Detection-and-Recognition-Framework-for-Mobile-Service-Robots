@@ -105,11 +105,11 @@ File folder/
 - Both dataset paths can be overridden via command-line arguments (`--cad_root` / `--data_path`)
 - Ensure all annotation files are complete before training; missing files will raise `FileNotFoundError`
 
-## Feature Details
+## Model Details
 
 Features are demonstrated in the figure below.
 
-![Feature Details](features.png)
+![Feature Details](features_full.png)
 
 ### Stage 1: Geometric Features (7-Dimensional)
 
@@ -140,3 +140,48 @@ $f_1$ to $f_5$ are extracted from spatial distance and bounding box geometry and
 - **Interaction synchrony $f_9$:** Weighted combination of flow magnitude similarity, temporal motion pattern similarity, posture consistency, and dominant direction alignment, with empirically determined weights.
 
 > **Note:** To enforce permutation invariance, asymmetric features are computed from both $A \rightarrow B$ and $B \rightarrow A$ perspectives and symmetrized by averaging. All features are normalized to $[0, 1]$ or contain built‑in normalization as defined above.
+
+### Stage 2 GNN: Graph-Based Scene Modeling
+
+The GNN classifier builds a fully-connected directed scene graph over all detected persons in each frame. Node and edge representations are jointly refined by Graph Transformer message passing before pair-level behavior classification.
+
+![GNN Architecture](gnn_architecture.png)
+
+#### Node Features (5D / 13D)
+
+Per-person node features are derived purely from bounding box geometry (no visual backbone required):
+
+- **Normalized center-x:** Horizontal center coordinate of the bounding box divided by image width.
+- **Normalized center-y:** Vertical center coordinate divided by image height.
+- **Normalized width:** Bounding box width divided by image width.
+- **Normalized height:** Bounding box height divided by image height.
+- **Aspect ratio:** Height-to-width ratio of the bounding box.
+
+With per-node optical flow enabled (`--flow_node_feats`), 8 additional per-person motion statistics are appended, expanding the node feature to 13D.
+
+#### Edge Features (7D / 17D)
+
+Each directed edge $(i \rightarrow j)$ carries the same 7D geometric features as Stage 1, encoding the spatial relationship from person $i$ to person $j$. When flow injection is enabled (`--inject_flow_to_edges`), the 10D pair-level optical flow feature vector is concatenated for target-pair edges, expanding those edges to 17D.
+
+#### Graph Transformer Message Passing
+
+$L = 2$ Graph Transformer layers are applied (hidden dim $= 256$, $H = 4$ attention heads). Each layer performs two coupled updates:
+
+- **Edge update:** $e'_{ij} = \text{LN}\bigl(e_{ij} + \text{SiLU}(W_s h_i + W_d h_j + W_e e_{ij})\bigr)$ — edges absorb source and destination node context at each layer.
+- **Node update:** Multi-head attention using the updated edge features $e'_{ij}$: $h'_i = \text{ELU}\bigl(\text{LN}(\sum_j \alpha_{ij} W h_j + h_i)\bigr)$, where $\alpha_{ij} = \text{softmax}_j\bigl(a^\top [Wh_i \| Wh_j \| W_e e'_{ij}]\bigr)$.
+
+Both node and edge representations evolve jointly across all layers.
+
+#### Behavior Classifier
+
+For each labeled positive pair $(A, B)$, the behavior classifier receives the concatenation $[\mathbf{h}_A,\ \mathbf{h}_B,\ |\mathbf{h}_A - \mathbf{h}_B|,\ \mathbf{h}_A \odot \mathbf{h}_B,\ \mathbf{f}_\text{flow},\ \mathbf{e}_{AB}]$, where $\mathbf{h}$ are GNN-evolved node embeddings (256D), $\mathbf{f}_\text{flow}$ is the 10D geometric–motion feature vector, and $\mathbf{e}_{AB}$ is the symmetrized evolved edge feature (64D). This is passed through an MLP with hidden layers $[256, 128, 64]$ to produce 3-class logits.
+
+#### Group Detection Head
+
+A secondary binary head classifies all pairs — both positive (labeled) and negative (unlabeled, sampled from non-interacting persons in the same scene) — using $[\mathbf{h}_A, \mathbf{h}_B, |\mathbf{h}_A - \mathbf{h}_B|, \mathbf{h}_A \odot \mathbf{h}_B, \mathbf{e}_{AB}]$ through a compact MLP ($[256, 64] \rightarrow 1$ logit). Negative pair labels are derived automatically from pair membership with no extra annotation. The multi-task training loss combines behavior classification ($\lambda_\text{beh} = 0.8$) and group detection ($\lambda_\text{grp} = 0.2$).
+
+#### Optional Structural Improvements
+
+- **DropEdge:** Randomly discards a fraction of non-target-pair edges during training to regularize GNN message passing; edges belonging to target pairs are always preserved.
+- **Virtual Global Node:** A virtual node connected bidirectionally to every person node in the scene; after GNN propagation its embedding aggregates full scene context and is appended to the behavior classifier input.
+- **Cross-Pair Attention:** One self-attention layer applied over all pair representations within a scene before the final MLP, allowing each pair's classification to be informed by concurrent interactions in the same frame.
