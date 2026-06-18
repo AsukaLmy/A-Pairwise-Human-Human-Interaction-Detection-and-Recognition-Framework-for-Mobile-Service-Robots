@@ -105,6 +105,62 @@ def extract_geometric_features(box_A, box_B, image_width=3760, image_height=480,
         return result
 
 
+def extract_geometric_features_batch(boxes_A, boxes_B, image_width=3760, image_height=480):
+    """
+    Fully vectorized version of extract_geometric_features for E pairs at once.
+    No Python loops – all operations are tensor ops.
+
+    Args:
+        boxes_A, boxes_B: torch.Tensor [E, 4]  (x, y, w, h format)
+        image_width, image_height: normalization constants
+    Returns:
+        torch.Tensor [E, 7]
+    """
+    x_A = boxes_A[:, 0]; y_A = boxes_A[:, 1]
+    w_A = boxes_A[:, 2]; h_A = boxes_A[:, 3]
+    x_B = boxes_B[:, 0]; y_B = boxes_B[:, 1]
+    w_B = boxes_B[:, 2]; h_B = boxes_B[:, 3]
+
+    cx_A = x_A + w_A * 0.5;  cy_A = y_A + h_A * 0.5
+    cx_B = x_B + w_B * 0.5;  cy_B = y_B + h_B * 0.5
+
+    dx_direct  = (cx_A - cx_B).abs()
+    dx_wrap    = image_width - dx_direct
+    dx_actual  = torch.minimum(dx_direct, dx_wrap)          # panoramic wraparound
+
+    area_A = w_A * h_A;  area_B = w_B * h_B
+
+    # 1. horizontal_gap_norm
+    horizontal_gap_norm = (dx_actual - (w_A + w_B) * 0.5) / image_width
+
+    # 2. height_ratio
+    height_ratio = torch.minimum(h_A, h_B) / (torch.maximum(h_A, h_B) + 1e-6)
+
+    # 3. ground_distance
+    ground_distance = dx_actual / image_width
+
+    # 4. vertical overlap
+    y2_A = y_A + h_A;  y2_B = y_B + h_B
+    v_overlap = (torch.minimum(y2_A, y2_B) - torch.maximum(y_A, y_B)).clamp(min=0.0) \
+                / (torch.minimum(h_A, h_B) + 1e-6)
+
+    # 5. area_ratio
+    area_ratio = torch.minimum(area_A, area_B) / (torch.maximum(area_A, area_B) + 1e-6)
+
+    # 6. center_dist_norm
+    dy = cy_A - cy_B
+    center_dist_norm = torch.sqrt(dx_actual ** 2 + dy ** 2) \
+                       / torch.sqrt(area_A + area_B + 1e-6)
+
+    # 7. vertical_gap
+    vertical_gap = dy.abs() / image_height
+
+    return torch.stack([
+        horizontal_gap_norm, height_ratio, ground_distance,
+        v_overlap, area_ratio, center_dist_norm, vertical_gap,
+    ], dim=1)  # [E, 7]
+
+
 def extract_causal_motion_features(geometric_history):
     """
     Extract causal motion features from geometric history
