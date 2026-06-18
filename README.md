@@ -109,7 +109,7 @@ File folder/
 
 Features are demonstrated in the figure below.
 
-![Feature Details](images/features.png)
+![Feature Details](features.png)
 
 ### Stage 1: Geometric Features (7-Dimensional)
 
