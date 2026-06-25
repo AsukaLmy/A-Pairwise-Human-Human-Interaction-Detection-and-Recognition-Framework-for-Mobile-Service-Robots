@@ -1,4 +1,9 @@
 # Training Scripts
+
+Shorter version can be found here: https://arxiv.org/abs/2602.22346
+
+Longer/full version is my master thesis (but I dont have public link :D)
+
 ## Start
 ```bash
 pip install -r requirements.txt
